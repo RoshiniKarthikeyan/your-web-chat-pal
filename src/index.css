@@ -39,20 +39,28 @@ All colors MUST be HSL.
     --radius: 0.5rem;
 
     --sidebar-background: 0 0% 98%;
-
     --sidebar-foreground: 240 5.3% 26.1%;
-
     --sidebar-primary: 240 5.9% 10%;
-
     --sidebar-primary-foreground: 0 0% 98%;
-
     --sidebar-accent: 240 4.8% 95.9%;
-
     --sidebar-accent-foreground: 240 5.9% 10%;
-
     --sidebar-border: 220 13% 91%;
-
     --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /* Chat widget tokens */
+    --chat: 0 0% 100%;
+    --chat-border: 214.3 31.8% 91.4%;
+    --chat-header: 220 60% 50%;
+    --chat-header-foreground: 0 0% 100%;
+    --chat-avatar: 220 60% 50%;
+    --chat-avatar-foreground: 0 0% 100%;
+    --chat-user: 220 60% 50%;
+    --chat-user-foreground: 0 0% 100%;
+    --chat-assistant: 210 40% 96.1%;
+    --chat-assistant-foreground: 222.2 84% 4.9%;
+    --chat-bubble: 220 60% 50%;
+    --chat-bubble-foreground: 0 0% 100%;
+    --chat-ring: 220 60% 50%;
   }
 
   .dark {
