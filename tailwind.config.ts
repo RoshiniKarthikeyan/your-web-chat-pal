@@ -73,9 +73,15 @@ export default {
           ring: "hsl(var(--chat-ring))",
         },
       },
+      boxShadow: {
+        chat: "0 8px 30px -10px rgba(0,0,0,0.15)",
+        "chat-bubble": "0 4px 14px -3px rgba(0,0,0,0.2)",
+        "chat-bubble-hover": "0 6px 20px -3px rgba(0,0,0,0.25)",
+      },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
         sm: "calc(var(--radius) - 4px)",
       },
       keyframes: {
