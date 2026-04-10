@@ -1,9 +1,10 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Upload, FileText, Send, Bot, User, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
+import { extractPdfText } from "@/lib/pdf-extract";
 
 type Message = { role: "user" | "assistant"; content: string };
 
@@ -15,73 +16,77 @@ const DocumentChat = () => {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const streamRef = useRef("");
+  const rafRef = useRef<number | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     setUploading(true);
     setFileName(file.name);
 
-    // For text files, read directly
-    if (file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")) {
-      const text = await file.text();
-      setDocumentText(text);
-      setMessages([{ role: "assistant", content: `I've loaded **${file.name}** (${text.length} characters). Ask me anything about it!` }]);
-      setUploading(false);
-      return;
-    }
-
-    // For PDF: extract text client-side using basic approach
-    if (file.type === "application/pdf") {
-      try {
+    try {
+      if (file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")) {
+        const text = await file.text();
+        setDocumentText(text);
+        setMessages([{ role: "assistant", content: `I've loaded **${file.name}** (${text.length} characters). Ask me anything about it!` }]);
+      } else if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
         const arrayBuffer = await file.arrayBuffer();
-        // Simple text extraction from PDF binary
-        const uint8 = new Uint8Array(arrayBuffer);
-        const text = extractTextFromPDF(uint8);
-        if (text.length > 100) {
+        const text = await extractPdfText(arrayBuffer);
+        if (text.length > 50) {
           setDocumentText(text);
-          setMessages([{ role: "assistant", content: `I've loaded **${file.name}**. The extracted text is ${text.length} characters. Ask me anything about it!` }]);
+          setMessages([{ role: "assistant", content: `I've loaded **${file.name}** (${text.length} characters extracted). Ask me anything about it!` }]);
         } else {
-          setDocumentText("");
-          setMessages([{ role: "assistant", content: `I couldn't extract much text from **${file.name}**. It might be a scanned PDF. Try a text-based PDF instead.` }]);
+          setMessages([{ role: "assistant", content: `I couldn't extract much text from **${file.name}**. It might be a scanned/image PDF. Try a text-based PDF or .txt file instead.` }]);
         }
-      } catch {
-        setMessages([{ role: "assistant", content: `Error processing **${file.name}**. Please try a text file instead.` }]);
+      } else {
+        setMessages([{ role: "assistant", content: `Unsupported file type. Please upload a .txt, .md, or .pdf file.` }]);
       }
+    } catch {
+      setMessages([{ role: "assistant", content: `Error processing **${file.name}**. Please try a different file.` }]);
+    } finally {
       setUploading(false);
-      return;
     }
-
-    setMessages([{ role: "assistant", content: `Unsupported file type. Please upload a .txt, .md, or .pdf file.` }]);
-    setUploading(false);
   };
 
-  // Basic PDF text extraction
-  const extractTextFromPDF = (data: Uint8Array): string => {
-    const str = new TextDecoder("latin1").decode(data);
-    const textBlocks: string[] = [];
-    const regex = /\((.*?)\)/g;
-    let match;
-    while ((match = regex.exec(str)) !== null) {
-      const decoded = match[1]
-        .replace(/\\n/g, "\n")
-        .replace(/\\r/g, "")
-        .replace(/\\\(/g, "(")
-        .replace(/\\\)/g, ")")
-        .replace(/\\\\/g, "\\");
-      if (decoded.trim().length > 1) textBlocks.push(decoded);
-    }
-    return textBlocks.join(" ").replace(/\s+/g, " ").trim();
-  };
+  // Throttled state update using requestAnimationFrame
+  const flushStream = useCallback(() => {
+    const content = streamRef.current;
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.role === "assistant" && !last.content.startsWith("I've loaded")) {
+        return prev.map((m, i) => (i === prev.length - 1 ? { ...m, content } : m));
+      }
+      return [...prev, { role: "assistant", content }];
+    });
+    rafRef.current = null;
+    scrollToBottom();
+  }, [scrollToBottom]);
+
+  const appendStream = useCallback(
+    (text: string) => {
+      streamRef.current += text;
+      if (!rafRef.current) {
+        rafRef.current = requestAnimationFrame(flushStream);
+      }
+    },
+    [flushStream]
+  );
 
   const askQuestion = async () => {
     if (!input.trim() || loading || !documentText) return;
-    
+
     const userMsg: Message = { role: "user", content: input };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setLoading(true);
+    streamRef.current = "";
 
     try {
       const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`;
@@ -93,18 +98,21 @@ const DocumentChat = () => {
         },
         body: JSON.stringify({
           messages: [
-            { role: "user", content: `Here is a document to reference:\n\n${documentText.slice(0, 8000)}\n\nNow answer questions about it.` },
-            ...messages.filter((m) => m.role !== "assistant" || !m.content.startsWith("I've loaded")),
+            {
+              role: "system",
+              content: `You are a helpful study assistant. Answer questions based on the following document:\n\n${documentText.slice(0, 12000)}`,
+            },
+            ...messages
+              .filter((m) => !m.content.startsWith("I've loaded"))
+              .slice(-10),
             userMsg,
           ],
         }),
       });
 
-      // Handle streaming response
       if (!resp.body) throw new Error("No response");
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
-      let full = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -117,24 +125,25 @@ const DocumentChat = () => {
           try {
             const parsed = JSON.parse(json);
             const c = parsed.choices?.[0]?.delta?.content;
-            if (c) {
-              full += c;
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                if (last?.role === "assistant" && !last.content.startsWith("I've loaded")) {
-                  return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: full } : m);
-                }
-                return [...prev, { role: "assistant", content: full }];
-              });
-            }
+            if (c) appendStream(c);
           } catch {}
         }
       }
+
+      // Final flush
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      flushStream();
     } catch (e: any) {
       setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.message}` }]);
     } finally {
       setLoading(false);
     }
+  };
+
+  const resetDocument = () => {
+    setDocumentText("");
+    setFileName("");
+    setMessages([]);
   };
 
   return (
@@ -154,7 +163,15 @@ const DocumentChat = () => {
             </div>
             <input ref={fileInputRef} type="file" accept=".txt,.md,.pdf" onChange={handleFile} className="hidden" />
             <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Processing...</> : <><FileText className="mr-2 h-4 w-4" /> Choose File</>}
+              {uploading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Processing...
+                </>
+              ) : (
+                <>
+                  <FileText className="mr-2 h-4 w-4" /> Choose File
+                </>
+              )}
             </Button>
           </CardContent>
         </Card>
@@ -163,7 +180,7 @@ const DocumentChat = () => {
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <FileText className="h-4 w-4" />
             <span>{fileName}</span>
-            <Button variant="ghost" size="sm" onClick={() => { setDocumentText(""); setFileName(""); setMessages([]); }}>
+            <Button variant="ghost" size="sm" onClick={resetDocument}>
               Change
             </Button>
           </div>
@@ -176,15 +193,19 @@ const DocumentChat = () => {
                     <Bot className="h-4 w-4 text-primary-foreground" />
                   </div>
                 )}
-                <div className={cn(
-                  "max-w-[80%] rounded-2xl px-4 py-2 text-sm",
-                  msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-md" : "bg-muted text-foreground rounded-bl-md"
-                )}>
+                <div
+                  className={cn(
+                    "max-w-[80%] rounded-2xl px-4 py-2 text-sm",
+                    msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-md" : "bg-muted text-foreground rounded-bl-md"
+                  )}
+                >
                   {msg.role === "assistant" ? (
                     <div className="prose prose-sm max-w-none dark:prose-invert [&_p]:m-0">
                       <ReactMarkdown>{msg.content}</ReactMarkdown>
                     </div>
-                  ) : msg.content}
+                  ) : (
+                    msg.content
+                  )}
                 </div>
                 {msg.role === "user" && (
                   <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted">
@@ -193,6 +214,7 @@ const DocumentChat = () => {
                 )}
               </div>
             ))}
+            <div ref={messagesEndRef} />
           </div>
 
           <form onSubmit={(e) => { e.preventDefault(); askQuestion(); }} className="flex items-center gap-2">
@@ -204,7 +226,7 @@ const DocumentChat = () => {
               disabled={loading}
             />
             <Button type="submit" disabled={!input.trim() || loading} className="h-10 w-10 rounded-xl p-0">
-              <Send className="h-4 w-4" />
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </Button>
           </form>
         </>
